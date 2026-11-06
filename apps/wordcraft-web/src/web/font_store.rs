@@ -8,7 +8,9 @@ use wasm_bindgen::closure::Closure;
 use web_sys::{IdbDatabase, IdbRequest, IdbTransactionMode};
 
 const DB_NAME: &str = "wordcraft";
+const DB_VERSION: u32 = 2;
 const STORE: &str = "fonts";
+const AUTOSAVE_STORE: &str = "autosaves";
 
 fn js(e: JsValue) -> String {
     format!("{e:?}")
@@ -33,7 +35,7 @@ async fn done(req: &IdbRequest) -> Result<JsValue, String> {
 /// The database, with its font store made on first use.
 async fn open() -> Result<IdbDatabase, String> {
     let factory = web_sys::window().ok_or("no window")?.indexed_db().map_err(js)?.ok_or("IndexedDB is unavailable")?;
-    let req = factory.open_with_u32(DB_NAME, 1).map_err(js)?;
+    let req = factory.open_with_u32(DB_NAME, DB_VERSION).map_err(js)?;
     let upgrade_req = req.clone();
     let upgrade = Closure::<dyn FnMut()>::new(move || {
         if let Ok(db) = upgrade_req.result().and_then(|r| r.dyn_into::<IdbDatabase>())
@@ -41,6 +43,12 @@ async fn open() -> Result<IdbDatabase, String> {
             && let Err(e) = db.create_object_store(STORE)
         {
             log::error!("couldn't make the font store: {e:?}");
+        }
+        if let Ok(db) = upgrade_req.result().and_then(|r| r.dyn_into::<IdbDatabase>())
+            && !db.object_store_names().contains(AUTOSAVE_STORE)
+            && let Err(e) = db.create_object_store(AUTOSAVE_STORE)
+        {
+            log::error!("couldn't make the autosave store: {e:?}");
         }
     });
     req.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));

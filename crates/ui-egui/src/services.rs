@@ -33,6 +33,11 @@ pub struct Services {
     /// #1315). The hook starts a ticket for such a save and reports how it ended; until then the
     /// document's save isn't confirmed, and a New/Open held back by the Save Changes prompt waits.
     pub async_saves: Option<async_saves::AsyncSaves>,
+    /// Web: save an AutoSave draft to persistent browser storage; returns a ticket completed via
+    /// `async_saves` after the storage transaction commits.
+    pub browser_autosave: Option<Box<dyn Fn(String, Vec<u8>) -> Result<u64, String>>>,
+    /// Web: remove the stored AutoSave draft after an explicit save or when AutoSave is disabled.
+    pub browser_autosave_clear: Option<Box<dyn Fn()>>,
     /// Web, framed by a page that keeps the files (`?host=parent`): set alongside `download`,
     /// Save, Save As and Export hand the bytes to that page instead, with whether it was Save As
     /// ([`HostSaveFn`]: true for a `file.saveAs` in a format that keeps everything, which File ›

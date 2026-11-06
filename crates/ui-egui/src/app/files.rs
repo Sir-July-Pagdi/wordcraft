@@ -1,3 +1,4 @@
+use crate::SaveInFlight;
 use super::{
     AutoSaveBlock, AwaitingSave, PromptSave, SaveChoice, Value, WordApp, async_saves, dialogs, file_dialogs, i18n, json, keeps_everything, panes,
     printing,
@@ -119,6 +120,28 @@ impl WordApp {
             let current = self.session.document_id();
             if let Some(i) = self.saves_in_flight.iter().position(|s| s.ticket == ticket) {
                 let save = self.saves_in_flight.swap_remove(i);
+                if let Some(revision) = save.autosave_revision {
+                    match outcome {
+                        async_saves::SaveOutcome::Saved if save.document == current && self.session.rev() == revision => {
+                            self.session.dirty = false;
+                            self.report_dirty();
+                            log::info!("autosaved {} to browser storage", save.name);
+                        }
+                        async_saves::SaveOutcome::Saved => log::info!("saved an older browser draft for {}", save.name),
+                        async_saves::SaveOutcome::Cancelled => {}
+                        async_saves::SaveOutcome::Failed(error) => {
+                            self.autosave = false;
+                            self.session.autosave = false;
+                            let msg = i18n::fmt(
+                                tl!("AutoSave failed: {error}. Save the document to turn AutoSave back on."),
+                                &[("error", &error)],
+                            );
+                            log::error!("AutoSave failed: {error}");
+                            self.status(msg);
+                        }
+                    }
+                    continue;
+                }
                 match &outcome {
                     async_saves::SaveOutcome::Saved => log::info!("saved {} through the save picker", save.name),
                     async_saves::SaveOutcome::Cancelled | async_saves::SaveOutcome::Failed(_) => {
@@ -129,6 +152,12 @@ impl WordApp {
                             let _ = self.session.with_document(save.document, |s| s.dirty = true);
                         }
                     }
+                }
+                if matches!(outcome, async_saves::SaveOutcome::Saved)
+                    && save.marked_saved
+                    && let Some(clear) = &self.services.browser_autosave_clear
+                {
+                    clear();
                 }
                 if let async_saves::SaveOutcome::Failed(error) = &outcome {
                     let msg = i18n::fmt(tl!("Couldn't download {name}: {error}"), &[("name", &save.name), ("error", error)]);
@@ -375,8 +404,11 @@ impl WordApp {
     /// user saved to in this session, in a format that keeps everything, and never in the browser
     /// (a page can't write to the user's files; saving there is a download, #176).
     pub fn autosave_block(&self) -> Option<AutoSaveBlock> {
-        if self.services.download.is_some() {
+        if self.services.download.is_some() && self.services.browser_autosave.is_none() {
             return Some(AutoSaveBlock::Browser);
+        }
+        if self.services.browser_autosave.is_some() {
+            return None;
         }
         let Some(path) = &self.session.path else { return Some(AutoSaveBlock::Unsaved) };
         if !keeps_everything(&path.to_string_lossy()) {
@@ -404,6 +436,11 @@ impl WordApp {
         }
         self.autosave = on;
         self.session.autosave = on;
+        if !on
+            && let Some(clear) = &self.services.browser_autosave_clear
+        {
+            clear();
+        }
         Ok(json!({"value": on}))
     }
 
@@ -412,6 +449,35 @@ impl WordApp {
     pub(crate) fn autosave_tick(&mut self, now: f64) {
         if self.autosaves() && self.session.dirty && now - self.last_autosave > 2500.0 && now - self.canvas.caret_visible_since > 1500.0 {
             self.last_autosave = now;
+            if let Some(store) = &self.services.browser_autosave {
+                let name = "WordCraft AutoSave.docx";
+                let password = self.session.password.as_ref().map(wordcraft_engine::Password::as_str);
+                let opts = wordcraft_engine::cmd::file::export_options(&self.session, &json!({}));
+                let bytes = match wordcraft_engine::io::save_bytes_with(name, &self.session.doc, password, &opts) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.autosave = false;
+                        self.session.autosave = false;
+                        self.status(i18n::fmt(tl!("AutoSave failed: {error}. Save the document to turn AutoSave back on."), &[("error", &error)]));
+                        return;
+                    }
+                };
+                match store(name.into(), bytes) {
+                    Ok(ticket) => self.saves_in_flight.push(SaveInFlight {
+                        ticket,
+                        name: name.into(),
+                        document: self.session.document_id(),
+                        marked_saved: false,
+                        autosave_revision: Some(self.session.rev()),
+                    }),
+                    Err(error) => {
+                        self.autosave = false;
+                        self.session.autosave = false;
+                        self.status(i18n::fmt(tl!("AutoSave failed: {error}. Save the document to turn AutoSave back on."), &[("error", &error)]));
+                    }
+                }
+                return;
+            }
             if let Err(e) = self.session.run("file.save", &json!({})) {
                 log::warn!("AutoSave failed: {e}");
                 self.autosave_path = None;

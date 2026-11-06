@@ -59,6 +59,17 @@ impl AsyncSaves {
         })
     }
 
+    /// Start a background save that is tracked for unload protection but is not claimed by the
+    /// next user-triggered `download` call.
+    pub fn start_background(&self) -> u64 {
+        self.with(|s| {
+            s.next = s.next.wrapping_add(1);
+            let ticket = s.next;
+            s.pending.push(ticket);
+            ticket
+        })
+    }
+
     /// The save `ticket` ended. An unknown or already finished ticket is ignored.
     pub fn finish(&self, ticket: u64, outcome: SaveOutcome) {
         self.with(|s| {
@@ -92,12 +103,17 @@ mod tests {
     #[test]
     fn tickets_start_finish_and_are_read_once() {
         let saves = AsyncSaves::default();
+        let background = saves.start_background();
+        assert_eq!(saves.take_started(), None);
         let a = saves.start();
         let b = saves.start();
         assert_ne!(a, b);
         assert_eq!(saves.take_started(), Some(b));
         assert_eq!(saves.take_started(), None);
+        assert_eq!(saves.pending(), 3);
+        saves.finish(background, SaveOutcome::Saved);
         assert_eq!(saves.pending(), 2);
+        assert_eq!(saves.take_finished(), vec![(background, SaveOutcome::Saved)]);
         saves.finish(a, SaveOutcome::Cancelled);
         saves.finish(a, SaveOutcome::Saved);
         saves.finish(999, SaveOutcome::Saved);

@@ -122,6 +122,8 @@ struct SaveInFlight {
     document: u64,
     /// Whether it marked the document saved (a Save in a format that keeps everything).
     marked_saved: bool,
+    /// The revision an AutoSave draft contains; `None` for a user-triggered download.
+    autosave_revision: Option<u64>,
 }
 
 /// Web: the command a Save Changes prompt holds back until its picker save ends.

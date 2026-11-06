@@ -192,8 +192,13 @@ impl WordApp {
             // the document's save isn't confirmed.
             if let Some(ticket) = saves.as_ref().and_then(async_saves::AsyncSaves::take_started) {
                 let document = self.session.document_id();
-                self.saves_in_flight.push(SaveInFlight { ticket, name: name.clone(), document, marked_saved });
+                self.saves_in_flight.push(SaveInFlight { ticket, name: name.clone(), document, marked_saved, autosave_revision: None });
                 return Ok(json!({"downloaded": name, "bytes": bytes.len(), "pendingSave": ticket}));
+            }
+            if marked_saved
+                && let Some(clear) = &self.services.browser_autosave_clear
+            {
+                clear();
             }
             return Ok(json!({"downloaded": name, "bytes": bytes.len()}));
         }
